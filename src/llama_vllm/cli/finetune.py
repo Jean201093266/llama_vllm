@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from llama_vllm.config.schemas import load_config
+from llama_vllm.config.preflight import validate_training_preflight
 
 app = typer.Typer(help="Fine-tuning commands")
 
@@ -14,9 +15,11 @@ def run(
     config: str = typer.Option(..., "--config", "-c", help="YAML config path"),
     override: list[str] = typer.Option(None, "--override", help="Override values like key=value"),
 ) -> None:
+    cfg = load_config(config, config_type="finetuning", overrides=override or [])
+    validate_training_preflight(cfg)
+
     from llama_vllm.finetuning.trainer import run_finetuning
 
-    cfg = load_config(config, config_type="finetuning", overrides=override or [])
     run_finetuning(cfg)
 
 

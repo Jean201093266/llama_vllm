@@ -13,6 +13,7 @@ from llama_vllm.config.schemas import (
     TrainingArgs,
     load_config,
 )
+from llama_vllm.config.preflight import validate_training_preflight
 
 __all__ = [
     "load_config",
@@ -26,5 +27,6 @@ __all__ = [
     "DistillationConfig",
     "FineTuningConfig",
     "InferenceConfig",
+    "validate_training_preflight",
 ]
 

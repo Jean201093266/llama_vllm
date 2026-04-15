@@ -13,14 +13,59 @@ from transformers import (
 )
 
 from llama_vllm.config.schemas import DistillationConfig
+from llama_vllm.data.collator import CausalLMDataCollator
 from llama_vllm.data.dataset import load_and_preprocess
 from llama_vllm.distillation.feature_distill import FeatureDistillationLoss
 from llama_vllm.distillation.logit_distill import CombinedDistillationLoss
 from llama_vllm.distillation.teacher import build_teacher
+from llama_vllm.finetuning.metadata import build_run_metadata, write_run_metadata
+from llama_vllm.finetuning.runtime import build_trainer_callbacks, resolve_resume_checkpoint
 from llama_vllm.models.loader import wrap_lora
+from llama_vllm.utils.checkpoint import get_last_checkpoint, refresh_checkpoint_manifests
 from llama_vllm.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _build_training_arguments(config: DistillationConfig, has_eval: bool = True) -> TrainingArguments:
+    ta = config.training
+    evaluation_strategy = ta.eval_strategy if has_eval else "no"
+    load_best_model_at_end = ta.load_best_model_at_end if has_eval else False
+    return TrainingArguments(
+        output_dir=config.output_dir,
+        run_name=ta.run_name,
+        learning_rate=ta.learning_rate,
+        num_train_epochs=ta.num_train_epochs,
+        max_steps=ta.max_steps,
+        per_device_train_batch_size=ta.per_device_train_batch_size,
+        per_device_eval_batch_size=ta.per_device_eval_batch_size,
+        gradient_accumulation_steps=ta.gradient_accumulation_steps,
+        gradient_checkpointing=ta.gradient_checkpointing,
+        warmup_ratio=ta.warmup_ratio,
+        lr_scheduler_type=ta.lr_scheduler_type,
+        weight_decay=ta.weight_decay,
+        max_grad_norm=ta.max_grad_norm,
+        bf16=ta.bf16,
+        fp16=ta.fp16,
+        logging_steps=ta.logging_steps,
+        logging_first_step=ta.logging_first_step,
+        evaluation_strategy=evaluation_strategy,
+        eval_steps=ta.eval_steps,
+        save_strategy=ta.save_strategy,
+        save_steps=ta.save_steps,
+        save_total_limit=ta.save_total_limit,
+        save_safetensors=ta.save_safetensors,
+        load_best_model_at_end=load_best_model_at_end,
+        metric_for_best_model=ta.metric_for_best_model,
+        report_to=ta.report_to,
+        dataloader_num_workers=ta.dataloader_num_workers,
+        group_by_length=ta.group_by_length,
+        optim=ta.optim,
+        ddp_find_unused_parameters=ta.ddp_find_unused_parameters,
+        seed=ta.seed,
+        deepspeed=ta.deepspeed,
+        remove_unused_columns=False,
+    )
 
 
 class DistillationTrainer(Trainer):
@@ -158,38 +203,20 @@ def run_distillation(config: DistillationConfig) -> None:
 
     # ─── Load data ─────────────────────────────────────────────────
     train_ds, eval_ds = load_and_preprocess(config.data, tokenizer, mode="sft")
+    resume_checkpoint = resolve_resume_checkpoint(
+        config.output_dir,
+        requested_checkpoint=config.resume_from_checkpoint,
+        auto_resume_from_last_checkpoint=config.training.auto_resume_from_last_checkpoint,
+    )
+    write_run_metadata(
+        config.output_dir,
+        "run_start.json",
+        build_run_metadata(stage="distillation", config=config, resume_from_checkpoint=resume_checkpoint),
+    )
 
     # ─── Build TrainingArguments ───────────────────────────────────
-    ta = config.training
-    training_args = TrainingArguments(
-        output_dir=config.output_dir,
-        learning_rate=ta.learning_rate,
-        num_train_epochs=ta.num_train_epochs,
-        per_device_train_batch_size=ta.per_device_train_batch_size,
-        per_device_eval_batch_size=ta.per_device_eval_batch_size,
-        gradient_accumulation_steps=ta.gradient_accumulation_steps,
-        gradient_checkpointing=ta.gradient_checkpointing,
-        warmup_ratio=ta.warmup_ratio,
-        lr_scheduler_type=ta.lr_scheduler_type,
-        weight_decay=ta.weight_decay,
-        max_grad_norm=ta.max_grad_norm,
-        bf16=ta.bf16,
-        fp16=ta.fp16,
-        logging_steps=ta.logging_steps,
-        evaluation_strategy=ta.eval_strategy,
-        eval_steps=ta.eval_steps,
-        save_strategy=ta.save_strategy,
-        save_steps=ta.save_steps,
-        save_total_limit=ta.save_total_limit,
-        load_best_model_at_end=ta.load_best_model_at_end,
-        metric_for_best_model=ta.metric_for_best_model,
-        report_to=ta.report_to,
-        dataloader_num_workers=ta.dataloader_num_workers,
-        group_by_length=ta.group_by_length,
-        seed=ta.seed,
-        deepspeed=ta.deepspeed,
-        remove_unused_columns=False,
-    )
+    has_eval = eval_ds is not None
+    training_args = _build_training_arguments(config, has_eval=has_eval)
 
     # ─── Trainer ───────────────────────────────────────────────────
     trainer = DistillationTrainer(
@@ -198,14 +225,36 @@ def run_distillation(config: DistillationConfig) -> None:
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         tokenizer=tokenizer,
+        data_collator=CausalLMDataCollator(tokenizer),
+        callbacks=build_trainer_callbacks(config.training, has_eval=has_eval),
         teacher=teacher,
         distill_config=config,
         feature_loss=feature_loss_module,
     )
 
-    resume = config.resume_from_checkpoint
-    trainer.train(resume_from_checkpoint=resume)
+    train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
     trainer.save_model(config.output_dir)
     tokenizer.save_pretrained(config.output_dir)
+    latest_checkpoint = get_last_checkpoint(config.output_dir)
+    refresh_checkpoint_manifests(
+        config.output_dir,
+        latest_checkpoint=latest_checkpoint,
+        best_checkpoint=getattr(trainer.state, "best_model_checkpoint", None),
+    )
+    write_run_metadata(
+        config.output_dir,
+        "run_complete.json",
+        build_run_metadata(
+            stage="distillation",
+            config=config,
+            resume_from_checkpoint=resume_checkpoint,
+            status="completed",
+            extras={
+                "train_runtime": train_result.metrics.get("train_runtime") if hasattr(train_result, "metrics") else None,
+                "global_step": getattr(trainer.state, "global_step", None),
+                "best_model_checkpoint": getattr(trainer.state, "best_model_checkpoint", None),
+            },
+        ),
+    )
     logger.info(f"✓ Distillation complete → {config.output_dir}")
 

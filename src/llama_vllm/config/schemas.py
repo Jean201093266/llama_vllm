@@ -20,11 +20,14 @@ class DataArgs(BaseModel):
     dataset_format: Literal["alpaca", "sharegpt", "openai", "dpo_pairs", "raw"] = "alpaca"
     train_split: str = "train"
     eval_split: Optional[str] = "validation"
+    validation_split_ratio: float = 0.0
+    shuffle_before_split: bool = True
     max_samples: Optional[int] = None
     max_seq_length: int = 2048
     preprocessing_num_workers: int = 4
     cache_dir: Optional[str] = None
     system_prompt: Optional[str] = None
+    train_on_prompt: bool = False
     input_key: str = "input"
     output_key: str = "output"
     # DPO specific
@@ -36,6 +39,7 @@ class TrainingArgs(BaseModel):
     """Training hyperparameters mapped to HF TrainingArguments."""
     learning_rate: float = 2e-4
     num_train_epochs: int = 3
+    max_steps: int = -1
     per_device_train_batch_size: int = 4
     per_device_eval_batch_size: int = 4
     gradient_accumulation_steps: int = 4
@@ -58,9 +62,27 @@ class TrainingArgs(BaseModel):
     dataloader_num_workers: int = 4
     group_by_length: bool = True
     seed: int = 42
+    run_name: Optional[str] = None
+    auto_resume_from_last_checkpoint: bool = True
+    early_stopping_patience: Optional[int] = None
+    early_stopping_threshold: float = 0.0
+    save_safetensors: bool = True
+    logging_first_step: bool = True
+    optim: str = "adamw_torch"
+    ddp_find_unused_parameters: Optional[bool] = None
     deepspeed: Optional[str] = None
     fsdp: Optional[str] = None
     fsdp_config: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def validate_runtime_options(self):
+        if self.bf16 and self.fp16:
+            raise ValueError("`bf16` and `fp16` cannot both be enabled.")
+        if self.load_best_model_at_end and self.eval_strategy == "no":
+            raise ValueError("`load_best_model_at_end=True` requires evaluation to be enabled.")
+        if self.early_stopping_patience is not None and self.eval_strategy == "no":
+            raise ValueError("Early stopping requires evaluation to be enabled.")
+        return self
 
 
 class LoRAArgs(BaseModel):
@@ -117,6 +139,14 @@ class DistillationConfig(BaseModel):
     output_dir: str = "./outputs/distillation"
     resume_from_checkpoint: Optional[str] = None
 
+    @model_validator(mode="after")
+    def validate_distillation_requirements(self):
+        if self.distill_type in {"feature", "combined"} and self.use_vllm_teacher:
+            raise ValueError("Feature/combined distillation requires `use_vllm_teacher=False`.")
+        if self.distill_type in {"feature", "combined"} and not self.feature_layers:
+            raise ValueError("Feature/combined distillation requires non-empty `feature_layers`.")
+        return self
+
 
 # ─────────────────────────────────────────────
 # Fine-tuning Config
@@ -150,6 +180,16 @@ class FineTuningConfig(BaseModel):
     # LLaMA Factory compatibility
     use_llamafactory: bool = False
     llamafactory_args: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_method_specific_requirements(self):
+        if self.method == "rlhf" and not self.reward_model_path:
+            raise ValueError("`reward_model_path` is required when method='rlhf'.")
+        if self.method == "dpo" and self.data.dataset_format not in {"dpo_pairs", "raw"}:
+            raise ValueError("DPO requires `data.dataset_format` to be 'dpo_pairs' or 'raw'.")
+        if self.method == "qlora" and self.quantization.bits != 4:
+            raise ValueError("QLoRA requires `quantization.bits=4`.")
+        return self
 
 
 # ─────────────────────────────────────────────

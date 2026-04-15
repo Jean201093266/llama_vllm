@@ -21,8 +21,10 @@ data:
   preprocessing_num_workers: 1
 
 training:
+  run_name: distill-feature-demo
   learning_rate: 1.0e-4
   num_train_epochs: 2
+  max_steps: -1
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1
   gradient_accumulation_steps: 16
@@ -38,6 +40,13 @@ training:
   save_strategy: steps
   save_steps: 100
   save_total_limit: 2
+  auto_resume_from_last_checkpoint: true
+  early_stopping_patience: null
+  early_stopping_threshold: 0.0
+  save_safetensors: true
+  logging_first_step: true
+  optim: adamw_torch
+  ddp_find_unused_parameters: false
   report_to: [tensorboard]
 
 output_dir: ./outputs/distillation/feature

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 from datasets import Dataset, DatasetDict, load_dataset
 from transformers import PreTrainedTokenizerBase
@@ -109,17 +109,33 @@ def load_and_preprocess(
         ext = os.path.splitext(cfg.dataset_name_or_path)[-1].lower()
         fmt_map = {".json": "json", ".jsonl": "json", ".csv": "csv", ".parquet": "parquet"}
         file_fmt = fmt_map.get(ext, "json")
-        raw = load_dataset(file_fmt, data_files=cfg.dataset_name_or_path, cache_dir=cfg.cache_dir)
+        raw = load_dataset(file_fmt, data_files={"train": cfg.dataset_name_or_path}, cache_dir=cfg.cache_dir)
     else:
         raw = load_dataset(cfg.dataset_name_or_path, cache_dir=cfg.cache_dir)
 
     # Select splits
     if isinstance(raw, DatasetDict):
-        train_raw = raw[cfg.train_split]
-        eval_raw = raw.get(cfg.eval_split) if cfg.eval_split else None
+        available_splits = list(raw.keys())
+        train_split = cfg.train_split if cfg.train_split in raw else available_splits[0]
+        if train_split != cfg.train_split:
+            logger.warning(f"Requested train split '{cfg.train_split}' not found. Using '{train_split}' instead.")
+        train_raw = raw[train_split]
+        eval_raw = raw.get(cfg.eval_split) if cfg.eval_split and cfg.eval_split in raw else None
     else:
         train_raw = raw
         eval_raw = None
+
+    if eval_raw is None and cfg.validation_split_ratio > 0:
+        split = train_raw.train_test_split(
+            test_size=cfg.validation_split_ratio,
+            shuffle=cfg.shuffle_before_split,
+            seed=42,
+        )
+        train_raw = split["train"]
+        eval_raw = split["test"]
+        logger.info(
+            f"Validation split '{cfg.eval_split}' not found. Auto-split train set with ratio={cfg.validation_split_ratio}."
+        )
 
     # Subsample
     if cfg.max_samples and cfg.max_samples < len(train_raw):
@@ -142,11 +158,16 @@ def load_and_preprocess(
                 desc="Converting eval format",
             )
 
+    # DPO typically expects raw text columns and tokenizes internally inside TRL.
+    if mode == "dpo":
+        train_ds = _prepare_dpo_dataset(train_raw, cfg)
+        eval_ds = _prepare_dpo_dataset(eval_raw, cfg) if eval_raw is not None else None
+        logger.info(f"Train samples: {len(train_ds)}" + (f" | Eval samples: {len(eval_ds)}" if eval_ds else ""))
+        return train_ds, eval_ds
+
     # Tokenize
     if mode == "sft":
         tokenize_fn = _make_sft_tokenize_fn(cfg, tokenizer)
-    elif mode == "dpo":
-        tokenize_fn = _make_dpo_tokenize_fn(cfg, tokenizer)
     else:
         tokenize_fn = _make_sft_tokenize_fn(cfg, tokenizer)
 
@@ -178,42 +199,47 @@ def _make_sft_tokenize_fn(cfg: DataArgs, tokenizer: PreTrainedTokenizerBase):
     max_len = cfg.max_seq_length
     in_key = cfg.input_key
     out_key = cfg.output_key
+    train_on_prompt = cfg.train_on_prompt
 
     def tokenize(examples):
         inputs = examples.get(in_key, [""] * len(examples[list(examples.keys())[0]]))
         outputs = examples.get(out_key, [""] * len(inputs))
-        texts = [f"{inp}\n\n### Response:\n{out}" for inp, out in zip(inputs, outputs)]
-        tokenized = tokenizer(
-            texts,
-            truncation=True,
-            max_length=max_len,
-            padding=False,
-        )
-        tokenized["labels"] = tokenized["input_ids"].copy()
-        return tokenized
+        prompts = [f"{inp}\n\n### Response:\n" for inp in inputs]
+        texts = [f"{prompt}{out}" for prompt, out in zip(prompts, outputs)]
+        batch = tokenizer(texts, truncation=True, max_length=max_len, padding=False)
+        labels = []
+        prompt_lengths = None
+
+        if not train_on_prompt:
+            prompt_encodings = tokenizer(prompts, truncation=True, max_length=max_len, padding=False, add_special_tokens=True)
+            prompt_lengths = [len(ids) for ids in prompt_encodings["input_ids"]]
+
+        for idx, input_ids in enumerate(batch["input_ids"]):
+            sample_labels = list(input_ids)
+            if not train_on_prompt and prompt_lengths is not None:
+                prompt_len = min(prompt_lengths[idx], len(sample_labels))
+                sample_labels[:prompt_len] = [-100] * prompt_len
+            labels.append(sample_labels)
+
+        batch["labels"] = labels
+        return batch
 
     return tokenize
 
 
-def _make_dpo_tokenize_fn(cfg: DataArgs, tokenizer: PreTrainedTokenizerBase):
-    """Create a batched DPO tokenization function."""
-    max_len = cfg.max_seq_length
+def _prepare_dpo_dataset(dataset: Dataset, cfg: DataArgs) -> Dataset:
+    """Normalize preference datasets to TRL-friendly prompt/chosen/rejected text fields."""
     prompt_key = cfg.input_key
     chosen_key = cfg.chosen_key
     rejected_key = cfg.rejected_key
 
-    def tokenize(examples):
-        result = {}
-        for key, field in [
-            ("prompt", prompt_key),
-            ("chosen", chosen_key),
-            ("rejected", rejected_key),
-        ]:
-            texts = examples.get(field, [""] * len(examples[list(examples.keys())[0]]))
-            enc = tokenizer(texts, truncation=True, max_length=max_len, padding=False)
-            result[key + "_input_ids"] = enc["input_ids"]
-            result[key + "_attention_mask"] = enc["attention_mask"]
-        return result
-
-    return tokenize
+    return dataset.map(
+        lambda ex: {
+            "prompt": ex.get(prompt_key, ex.get("prompt", "")),
+            "chosen": ex.get(chosen_key, ex.get("chosen", "")),
+            "rejected": ex.get(rejected_key, ex.get("rejected", "")),
+        },
+        remove_columns=list(dataset.column_names),
+        desc="Preparing DPO text pairs",
+    )
 

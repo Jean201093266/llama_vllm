@@ -105,6 +105,14 @@ llama-vllm serve --config <yaml>
 llama-vllm finetune run --config configs/finetuning/lora.yaml --override training.learning_rate=1e-4 --override output_dir=./outputs/debug
 ```
 
+训练任务默认支持以下生产化能力：
+
+- 自动从最新 `checkpoint-*` 恢复（`training.auto_resume_from_last_checkpoint: true`）
+- 训练开始/完成时写入 `run_start.json` 与 `run_complete.json`
+- 写入 `latest_checkpoint.json` / `best_checkpoint.json` 作为 checkpoint 生命周期标记
+- 可选早停（`training.early_stopping_patience`）
+- DPO 针对不同 `trl` 版本做参数兼容处理
+
 ## Docker
 
 ```powershell
