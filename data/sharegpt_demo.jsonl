@@ -1,0 +1,3 @@
+{"conversations": [{"from": "human", "value": "请解释一下 LoRA 的核心思想。"}, {"from": "gpt", "value": "LoRA 通过在权重更新中引入低秩分解矩阵，只训练少量新增参数，从而降低微调成本。"}]}
+{"conversations": [{"from": "human", "value": "什么是 vLLM？"}, {"from": "gpt", "value": "vLLM 是一个高吞吐、低时延的大模型推理引擎，核心特性包括 PagedAttention 和高效批处理。"}]}
+

@@ -1,0 +1,50 @@
+type: finetuning
+model_name_or_path: Qwen/Qwen2-1.5B-Instruct
+method: lora
+use_llamafactory: false
+
+lora:
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: auto
+  bias: none
+
+quantization:
+  bits: null
+  quant_type: nf4
+  double_quant: true
+  compute_dtype: bfloat16
+
+data:
+  dataset_name_or_path: data/alpaca_zh_demo.jsonl
+  dataset_format: alpaca
+  train_split: train
+  eval_split: validation
+  max_seq_length: 2048
+  preprocessing_num_workers: 1
+  input_key: input
+  output_key: output
+
+training:
+  learning_rate: 2.0e-4
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: true
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  weight_decay: 0.01
+  bf16: true
+  fp16: false
+  logging_steps: 10
+  eval_strategy: steps
+  eval_steps: 100
+  save_strategy: steps
+  save_steps: 100
+  save_total_limit: 3
+  report_to: [tensorboard]
+
+output_dir: ./outputs/finetuning/lora
+
