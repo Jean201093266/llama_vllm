@@ -82,6 +82,15 @@ llama-vllm infer batch --config configs/inference/batch.yaml --input .\examples\
 llama-vllm serve --config configs/inference/server.yaml --port 8000
 ```
 
+### 5) 启动可视化后台（dry-run）
+
+```powershell
+llama-vllm dashboard --host 127.0.0.1 --port 7860 --db-path .dashboard/history.db
+```
+
+默认只提供 preflight 与命令预览，不会自动启动训练。
+后台请求历史会持久化到 SQLite（默认 `.dashboard/history.db`）。
+
 ## 主要命令
 
 ```powershell
@@ -91,6 +100,7 @@ llama-vllm finetune export --base-model <base> --adapter <adapter> --output <mer
 llama-vllm infer batch --config <yaml> --input <jsonl/csv>
 llama-vllm infer stream --config <yaml> --prompt "hello"
 llama-vllm serve --config <yaml>
+llama-vllm dashboard --host 127.0.0.1 --port 7860
 ```
 
 ## 配置说明
@@ -105,6 +115,17 @@ llama-vllm serve --config <yaml>
 llama-vllm finetune run --config configs/finetuning/lora.yaml --override training.learning_rate=1e-4 --override output_dir=./outputs/debug
 ```
 
+当 preflight 校验失败时，可使用 `--auto-fix` 仅打印可复制修复命令并退出：
+
+```powershell
+llama-vllm distill run --config configs/distillation/feature_distill.yaml --auto-fix
+llama-vllm finetune run --config configs/finetuning/lora.yaml --auto-fix
+```
+
+`--auto-fix` 会输出编号建议，并将第 1 条作为推荐修复命令。
+如需同时查看底层 `--override` 列表，可追加 `--show-raw`。
+如需自动应用第 1 条建议并仅重跑 preflight（不启动训练），可追加 `--apply-overrides`。
+
 训练任务默认支持以下生产化能力：
 
 - 自动从最新 `checkpoint-*` 恢复（`training.auto_resume_from_last_checkpoint: true`）
@@ -112,6 +133,7 @@ llama-vllm finetune run --config configs/finetuning/lora.yaml --override trainin
 - 写入 `latest_checkpoint.json` / `best_checkpoint.json` 作为 checkpoint 生命周期标记
 - 可选早停（`training.early_stopping_patience`）
 - DPO 针对不同 `trl` 版本做参数兼容处理
+- preflight 失败时会附带 `Quick override suggestions`（可直接复制 `--override` 参数进行降级修复）
 
 ## Docker
 

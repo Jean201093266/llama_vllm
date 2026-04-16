@@ -21,6 +21,7 @@ from llama_vllm.finetuning.runtime import (
 )
 from llama_vllm.models.loader import load_base_model, load_model_for_training
 from llama_vllm.utils.checkpoint import get_last_checkpoint, refresh_checkpoint_manifests
+from llama_vllm.utils.hardware import probe_training_capabilities
 from llama_vllm.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -112,7 +113,12 @@ def _run_sft_like(config: FineTuningConfig) -> None:
     write_run_metadata(
         config.output_dir,
         "run_start.json",
-        build_run_metadata(stage=config.method, config=config, resume_from_checkpoint=resume_checkpoint),
+        build_run_metadata(
+            stage=config.method,
+            config=config,
+            resume_from_checkpoint=resume_checkpoint,
+            extras={"hardware": probe_training_capabilities()},
+        ),
     )
 
     trainer = Trainer(
@@ -170,7 +176,12 @@ def _run_dpo(config: FineTuningConfig) -> None:
     write_run_metadata(
         config.output_dir,
         "run_start.json",
-        build_run_metadata(stage=config.method, config=config, resume_from_checkpoint=resume_checkpoint),
+        build_run_metadata(
+            stage=config.method,
+            config=config,
+            resume_from_checkpoint=resume_checkpoint,
+            extras={"hardware": probe_training_capabilities()},
+        ),
     )
 
     trainer = DPOTrainer(

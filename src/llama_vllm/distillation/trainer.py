@@ -22,6 +22,7 @@ from llama_vllm.finetuning.metadata import build_run_metadata, write_run_metadat
 from llama_vllm.finetuning.runtime import build_trainer_callbacks, resolve_resume_checkpoint
 from llama_vllm.models.loader import wrap_lora
 from llama_vllm.utils.checkpoint import get_last_checkpoint, refresh_checkpoint_manifests
+from llama_vllm.utils.hardware import probe_training_capabilities
 from llama_vllm.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -211,7 +212,12 @@ def run_distillation(config: DistillationConfig) -> None:
     write_run_metadata(
         config.output_dir,
         "run_start.json",
-        build_run_metadata(stage="distillation", config=config, resume_from_checkpoint=resume_checkpoint),
+        build_run_metadata(
+            stage="distillation",
+            config=config,
+            resume_from_checkpoint=resume_checkpoint,
+            extras={"hardware": probe_training_capabilities()},
+        ),
     )
 
     # ─── Build TrainingArguments ───────────────────────────────────
